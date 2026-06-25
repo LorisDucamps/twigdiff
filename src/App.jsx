@@ -850,21 +850,45 @@ function sumRawCounts(entry) {
   return Object.values(entry.raws).reduce((total, count) => total + count, 0);
 }
 
+function getConditionBalance(data) {
+  const ifTotal = sumRawCounts(data.if);
+  const endifTotal = sumRawCounts(data.endif);
+
+  return {
+    ifTotal,
+    endifTotal,
+    isBalanced: ifTotal === endifTotal,
+  };
+}
+
+function getBalanceCellStyle(isBalanced) {
+  return {
+    background: isBalanced ? "#e5ffe5" : "#ffe5e5",
+    padding: 8,
+  };
+}
+
 function renderRows(keys, dataA, dataB, options = {}) {
-  const { showTotals = false } = options;
+  const { showTotals = false, mode = "double", balanceA, balanceB } = options;
+  const isComparison = mode === "double";
 
   return keys.map((key) => {
     const a = dataA[key];
     const b = dataB[key];
 
     const isDifferent =
-      !a || !b || JSON.stringify(a.raws) !== JSON.stringify(b.raws);
+      isComparison &&
+      (!a || !b || JSON.stringify(a.raws) !== JSON.stringify(b.raws));
 
     return (
       <tr
         key={key}
         style={{
-          background: isDifferent ? "#ffe5e5" : "#e5ffe5",
+          background: isComparison
+            ? isDifferent
+              ? "#ffe5e5"
+              : "#e5ffe5"
+            : undefined,
           verticalAlign: "top",
         }}
       >
@@ -882,30 +906,54 @@ function renderRows(keys, dataA, dataB, options = {}) {
             : "—"}
         </td>
 
-        <td>
-          {b
-            ? Object.entries(b.raws).map(([expr, count]) => (
-                <div key={expr}>
-                  {expr} × {count}
-                </div>
-              ))
-            : "—"}
-        </td>
+        {isComparison ? (
+          <td>
+            {b
+              ? Object.entries(b.raws).map(([expr, count]) => (
+                  <div key={expr}>
+                    {expr} × {count}
+                  </div>
+                ))
+              : "—"}
+          </td>
+        ) : null}
 
         {showTotals ? (
           <td>
-            {key === "if" ? (
+            {isComparison && key === "if" ? (
               <>
-                <div>If total A: {sumRawCounts(a)}</div>
-                <div>If total B: {sumRawCounts(b)}</div>
+                <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+                  If total A: {balanceA.ifTotal}
+                </div>
+                <div style={{ height: 8 }} />
+                <div style={getBalanceCellStyle(balanceB.isBalanced)}>
+                  If total B: {balanceB.ifTotal}
+                </div>
               </>
             ) : null}
 
-            {key === "endif" ? (
+            {isComparison && key === "endif" ? (
               <>
-                <div>Endif total A: {sumRawCounts(a)}</div>
-                <div>Endif total B: {sumRawCounts(b)}</div>
+                <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+                  Endif total A: {balanceA.endifTotal}
+                </div>
+                <div style={{ height: 8 }} />
+                <div style={getBalanceCellStyle(balanceB.isBalanced)}>
+                  Endif total B: {balanceB.endifTotal}
+                </div>
               </>
+            ) : null}
+
+            {!isComparison && key === "if" ? (
+              <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+                If total: {balanceA.ifTotal}
+              </div>
+            ) : null}
+
+            {!isComparison && key === "endif" ? (
+              <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+                Endif total: {balanceA.endifTotal}
+              </div>
             ) : null}
 
             {key !== "if" && key !== "endif" ? "—" : null}
@@ -948,6 +996,8 @@ function renderHtmlIssueList(issues) {
 export default function App() {
   const [emailA, setEmailA] = useState("");
   const [emailB, setEmailB] = useState("");
+  const [viewMode, setViewMode] = useState("single");
+  const isDoubleView = viewMode === "double";
 
   const varsA = countTwigVariables(emailA);
   const varsB = countTwigVariables(emailB);
@@ -965,21 +1015,52 @@ export default function App() {
     ...validateEncodedSpecialCharacters(emailB),
   ];
 
-  const varKeys = Array.from(
-    new Set([...Object.keys(varsA), ...Object.keys(varsB)]),
-  );
+  const varKeys = isDoubleView
+    ? Array.from(new Set([...Object.keys(varsA), ...Object.keys(varsB)]))
+    : Object.keys(varsA);
 
-  const condKeys = Array.from(
-    new Set([...Object.keys(condA), ...Object.keys(condB)]),
-  );
+  const condKeys = isDoubleView
+    ? Array.from(new Set([...Object.keys(condA), ...Object.keys(condB)]))
+    : Object.keys(condA);
+  const conditionBalanceA = getConditionBalance(condA);
+  const conditionBalanceB = getConditionBalance(condB);
 
   return (
     <div style={{ padding: 24, fontFamily: "monospace" }}>
       <h1>🔍 Twig Diff Viewer</h1>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+        <button
+          type="button"
+          onClick={() => setViewMode("single")}
+          style={{
+            padding: "8px 12px",
+            border: "1px solid #ccc",
+            background: !isDoubleView ? "#272727" : "#ffffff",
+            color: !isDoubleView ? "#ffffff" : "#000000",
+            cursor: "pointer",
+          }}
+        >
+          Vue simple
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("double")}
+          style={{
+            padding: "8px 12px",
+            border: "1px solid #ccc",
+            background: isDoubleView ? "#272727" : "#ffffff",
+            color: isDoubleView ? "#ffffff" : "#000000",
+            cursor: "pointer",
+          }}
+        >
+          Vue double
+        </button>
+      </div>
+
       <div style={{ display: "flex", gap: 16 }}>
         <div style={{ width: "100%" }}>
-          <h2>Email actuellement en PROD</h2>
+          <h2>{isDoubleView ? "Email actuellement en PROD" : "Email HTML"}</h2>
           <textarea
             placeholder="Email HTML A"
             value={emailA}
@@ -988,16 +1069,18 @@ export default function App() {
             style={{ width: "100%" }}
           />
         </div>
-        <div style={{ width: "100%" }}>
-          <h2>Email sortie de PULSE</h2>
-          <textarea
-            placeholder="Email HTML B"
-            value={emailB}
-            onChange={(e) => setEmailB(e.target.value)}
-            rows={15}
-            style={{ width: "100%" }}
-          />
-        </div>
+        {isDoubleView ? (
+          <div style={{ width: "100%" }}>
+            <h2>Email sortie de PULSE</h2>
+            <textarea
+              placeholder="Email HTML B"
+              value={emailB}
+              onChange={(e) => setEmailB(e.target.value)}
+              rows={15}
+              style={{ width: "100%" }}
+            />
+          </div>
+        ) : null}
       </div>
 
       <h2 style={{ marginTop: 32 }}>Validation Twig</h2>
@@ -1010,20 +1093,22 @@ export default function App() {
             background: validationA.length ? "#fff2f2" : "#f4fff4",
           }}
         >
-          <h3 style={{ marginTop: 0 }}>Email A</h3>
+          <h3 style={{ marginTop: 0 }}>{isDoubleView ? "Email A" : "Email"}</h3>
           {renderValidationIssues(validationA)}
         </div>
-        <div
-          style={{
-            width: "100%",
-            border: "1px solid #ccc",
-            padding: 12,
-            background: validationB.length ? "#fff2f2" : "#f4fff4",
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>Email B</h3>
-          {renderValidationIssues(validationB)}
-        </div>
+        {isDoubleView ? (
+          <div
+            style={{
+              width: "100%",
+              border: "1px solid #ccc",
+              padding: 12,
+              background: validationB.length ? "#fff2f2" : "#f4fff4",
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>Email B</h3>
+            {renderValidationIssues(validationB)}
+          </div>
+        ) : null}
       </div>
 
       <h2 style={{ marginTop: 32 }}>Validation HTML</h2>
@@ -1036,20 +1121,22 @@ export default function App() {
             background: htmlValidationA.length ? "#fffaf2" : "#f4fff4",
           }}
         >
-          <h3 style={{ marginTop: 0 }}>Email A</h3>
+          <h3 style={{ marginTop: 0 }}>{isDoubleView ? "Email A" : "Email"}</h3>
           {renderHtmlIssueList(htmlValidationA)}
         </div>
-        <div
-          style={{
-            width: "100%",
-            border: "1px solid #ccc",
-            padding: 12,
-            background: htmlValidationB.length ? "#fffaf2" : "#f4fff4",
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>Email B</h3>
-          {renderHtmlIssueList(htmlValidationB)}
-        </div>
+        {isDoubleView ? (
+          <div
+            style={{
+              width: "100%",
+              border: "1px solid #ccc",
+              padding: 12,
+              background: htmlValidationB.length ? "#fffaf2" : "#f4fff4",
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>Email B</h3>
+            {renderHtmlIssueList(htmlValidationB)}
+          </div>
+        ) : null}
       </div>
 
       {/* VARIABLES */}
@@ -1058,11 +1145,15 @@ export default function App() {
         <thead>
           <tr>
             <th>Variable</th>
-            <th>Email A</th>
-            <th>Email B</th>
+            <th>{isDoubleView ? "Email A" : "Email"}</th>
+            {isDoubleView ? <th>Email B</th> : null}
           </tr>
         </thead>
-        <tbody>{renderRows(varKeys, varsA, varsB)}</tbody>
+        <tbody>
+          {renderRows(varKeys, varsA, isDoubleView ? varsB : {}, {
+            mode: isDoubleView ? "double" : "single",
+          })}
+        </tbody>
       </table>
 
       {/* CONDITIONS */}
@@ -1071,12 +1162,19 @@ export default function App() {
         <thead>
           <tr>
             <th>Condition</th>
-            <th>Email A</th>
-            <th>Email B</th>
+            <th>{isDoubleView ? "Email A" : "Email"}</th>
+            {isDoubleView ? <th>Email B</th> : null}
             <th>Totaux</th>
           </tr>
         </thead>
-        <tbody>{renderRows(condKeys, condA, condB, { showTotals: true })}</tbody>
+        <tbody>
+          {renderRows(condKeys, condA, isDoubleView ? condB : {}, {
+            showTotals: true,
+            mode: isDoubleView ? "double" : "single",
+            balanceA: conditionBalanceA,
+            balanceB: conditionBalanceB,
+          })}
+        </tbody>
       </table>
     </div>
   );
