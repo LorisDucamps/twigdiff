@@ -1,6 +1,10 @@
-import { useDeferredValue, useState } from "react";
-import { HtmlValidate } from "html-validate/browser";
-import html5Elements from "html-validate/elements/html5";
+import {
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import twigGuardLogo from "./assets/twigguard-logo.svg";
 
 const TWIG_CONTROL_KEYWORDS = new Set([
@@ -17,14 +21,71 @@ const HTTPS_LINK_REGEX = /^https:\/\//i;
 const NON_ASCII_CHAR_REGEX = /[^\u0000-\u007f]/;
 const XHTML_TRANSITIONAL_DOCTYPE_REGEX =
   /<!DOCTYPE\s+html\s+PUBLIC\s+"-\/\/W3C\/\/DTD XHTML 1\.0 Transitional\/\/EN"\s+"http:\/\/www\.w3\.org\/TR\/xhtml1\/DTD\/xhtml1-transitional\.dtd"\s*>/i;
-const HTML_VALIDATOR = new HtmlValidate({
-  rules: {
-    "prefer-tbody": "off",
+const ISSUE_CATEGORY_META = {
+  twig: {
+    label: "Twig",
+    badge: "bg-rose-100 text-rose-700 ring-1 ring-inset ring-rose-200",
   },
-});
-const HTML_GLOBAL_ATTRIBUTES = new Set(
-  Object.keys(html5Elements["*"]?.attributes || {}),
-);
+  doctype: {
+    label: "Doctype",
+    badge: "bg-sky-100 text-sky-700 ring-1 ring-inset ring-sky-200",
+  },
+  html: {
+    label: "HTML",
+    badge: "bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200",
+  },
+  tag: {
+    label: "Balises",
+    badge: "bg-orange-100 text-orange-700 ring-1 ring-inset ring-orange-200",
+  },
+  attribute: {
+    label: "Attributs",
+    badge: "bg-violet-100 text-violet-700 ring-1 ring-inset ring-violet-200",
+  },
+  image: {
+    label: "Images",
+    badge: "bg-cyan-100 text-cyan-700 ring-1 ring-inset ring-cyan-200",
+  },
+  link: {
+    label: "Liens",
+    badge: "bg-blue-100 text-blue-700 ring-1 ring-inset ring-blue-200",
+  },
+  encoding: {
+    label: "Encodage",
+    badge: "bg-fuchsia-100 text-fuchsia-700 ring-1 ring-inset ring-fuchsia-200",
+  },
+};
+const ISSUE_FILTER_ORDER = [
+  "twig",
+  "doctype",
+  "html",
+  "tag",
+  "attribute",
+  "image",
+  "link",
+  "encoding",
+];
+const EMPTY_CONDITION_BALANCE = {
+  ifTotal: 0,
+  endifTotal: 0,
+  forTotal: 0,
+  endforTotal: 0,
+  isIfBalanced: true,
+  isForBalanced: true,
+  isBalanced: true,
+};
+const EMPTY_VALIDATION_STATE = {
+  varsA: {},
+  varsB: {},
+  condA: {},
+  condB: {},
+  validationA: [],
+  validationB: [],
+  htmlValidationA: [],
+  htmlValidationB: [],
+  conditionBalanceA: EMPTY_CONDITION_BALANCE,
+  conditionBalanceB: EMPTY_CONDITION_BALANCE,
+};
 const EXTRA_ALLOWED_ATTRIBUTES = new Set(["xmlns"]);
 const XHTML_TRANSITIONAL_ALLOWED_ATTRIBUTES = {
   img: new Set(["alt"]),
@@ -130,6 +191,22 @@ const XHTML_TRANSITIONAL_ATTRIBUTE_VALUE_RULES = {
   },
 };
 
+function useDebouncedValue(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 /**
  * {{ ... }}
  */
@@ -176,6 +253,28 @@ function getLineNumber(text, index) {
   return text.slice(0, index).split("\n").length;
 }
 
+function getLineStartIndex(text, lineNumber) {
+  if (lineNumber <= 1) {
+    return 0;
+  }
+
+  let currentLine = 1;
+  let start = 0;
+
+  while (currentLine < lineNumber && start < text.length) {
+    const nextBreak = text.indexOf("\n", start);
+
+    if (nextBreak === -1) {
+      return text.length;
+    }
+
+    start = nextBreak + 1;
+    currentLine += 1;
+  }
+
+  return start;
+}
+
 function findUnexpectedTwigKeyword(tokens) {
   return tokens.find((token) => TWIG_CONTROL_KEYWORDS.has(token));
 }
@@ -188,11 +287,14 @@ function validateTwigControlStructures(html) {
 
   while ((match = regex.exec(html)) !== null) {
     const raw = match[1].trim();
+    const fullTag = match[0];
     const line = getLineNumber(html, match.index);
     const parts = raw.split(/\s+/).filter(Boolean);
     const keyword = parts[0];
     const restTokens = parts.slice(1);
     const rest = restTokens.join(" ");
+    const tagStart = match.index;
+    const tagEnd = match.index + fullTag.length;
 
     if (!TWIG_CONTROL_KEYWORDS.has(keyword)) {
       continue;
@@ -201,19 +303,25 @@ function validateTwigControlStructures(html) {
     const unexpectedKeyword = findUnexpectedTwigKeyword(restTokens);
 
     if (unexpectedKeyword) {
-      errors.push({
-        line,
-        tag: raw,
-        message: `Balise invalide: "${unexpectedKeyword}" doit etre dans sa propre balise Twig.`,
-      });
+        errors.push({
+          category: "twig",
+          line,
+          tag: raw,
+          start: tagStart,
+          end: tagEnd,
+          message: `Balise invalide: "${unexpectedKeyword}" doit etre dans sa propre balise Twig.`,
+        });
       continue;
     }
 
     if (keyword === "if" || keyword === "for") {
       if (!rest) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `La balise "{% ${keyword} %}" doit contenir une condition ou une expression.`,
         });
         continue;
@@ -223,6 +331,8 @@ function validateTwigControlStructures(html) {
         keyword,
         line,
         hasElse: false,
+        start: tagStart,
+        end: tagEnd,
       });
       continue;
     }
@@ -232,8 +342,11 @@ function validateTwigControlStructures(html) {
 
       if (!rest) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `La balise "{% elseif %}" doit contenir une condition.`,
         });
         continue;
@@ -241,8 +354,11 @@ function validateTwigControlStructures(html) {
 
       if (!currentBlock || currentBlock.keyword !== "if") {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `"{% elseif %}" doit etre place a l'interieur d'un bloc "{% if %}".`,
         });
         continue;
@@ -250,8 +366,11 @@ function validateTwigControlStructures(html) {
 
       if (currentBlock.hasElse) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `"{% elseif %}" ne peut pas apparaitre apres un "{% else %}".`,
         });
       }
@@ -263,8 +382,11 @@ function validateTwigControlStructures(html) {
 
       if (rest) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `La balise "{% else %}" ne doit pas contenir d'expression.`,
         });
         continue;
@@ -272,8 +394,11 @@ function validateTwigControlStructures(html) {
 
       if (!currentBlock || !["if", "for"].includes(currentBlock.keyword)) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `"{% else %}" doit etre rattache a un bloc "{% if %}" ou "{% for %}".`,
         });
         continue;
@@ -281,8 +406,11 @@ function validateTwigControlStructures(html) {
 
       if (currentBlock.hasElse) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `Un bloc "{% ${currentBlock.keyword} %}" ne peut contenir qu'un seul "{% else %}".`,
         });
         continue;
@@ -298,8 +426,11 @@ function validateTwigControlStructures(html) {
 
       if (rest) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `La balise "{% ${keyword} %}" ne doit pas contenir d'expression.`,
         });
         continue;
@@ -307,8 +438,11 @@ function validateTwigControlStructures(html) {
 
       if (!currentBlock || currentBlock.keyword !== expectedOpeningTag) {
         errors.push({
+          category: "twig",
           line,
           tag: raw,
+          start: tagStart,
+          end: tagEnd,
           message: `"{% ${keyword} %}" ne correspond a aucune ouverture "{% ${expectedOpeningTag} %}".`,
         });
         continue;
@@ -320,8 +454,11 @@ function validateTwigControlStructures(html) {
 
   stack.forEach((block) => {
     errors.push({
+      category: "twig",
       line: block.line,
       tag: block.keyword,
+      start: block.start,
+      end: block.end,
       message: `Le bloc "{% ${block.keyword} %}" ouvert ligne ${block.line} n'a pas de fermeture "{% end${block.keyword} %}".`,
     });
   });
@@ -344,6 +481,10 @@ function parseHtmlAttributes(attributesSource) {
     parsedAttributes.push({
       name,
       value,
+      start: match.index,
+      end: match.index + match[0].length,
+      nameStart: match.index,
+      nameEnd: match.index + match[1].length,
     });
 
     if (Object.prototype.hasOwnProperty.call(attributes, name)) {
@@ -380,8 +521,38 @@ function getLineText(text, lineNumber) {
   return text.split("\n")[lineNumber - 1]?.trim() || "";
 }
 
+function resolveSnippetRangeOnLine(text, lineNumber, snippet) {
+  const lineStart = getLineStartIndex(text, lineNumber);
+  const lineEnd = text.indexOf("\n", lineStart);
+  const safeLineEnd = lineEnd === -1 ? text.length : lineEnd;
+  const lineText = text.slice(lineStart, safeLineEnd);
+
+  if (!snippet) {
+    return {
+      start: lineStart,
+      end: safeLineEnd,
+    };
+  }
+
+  const trimmedSnippet = snippet.trim();
+  const directIndex = lineText.indexOf(trimmedSnippet);
+
+  if (directIndex !== -1) {
+    return {
+      start: lineStart + directIndex,
+      end: lineStart + directIndex + trimmedSnippet.length,
+    };
+  }
+
+  return {
+    start: lineStart,
+    end: safeLineEnd,
+  };
+}
+
 function validateDoctype(html) {
-  const match = html.match(/<!DOCTYPE[\s\S]*?>/i);
+  const regex = /<!DOCTYPE[\s\S]*?>/i;
+  const match = regex.exec(html);
 
   if (!match) {
     return [];
@@ -393,8 +564,11 @@ function validateDoctype(html) {
 
   return [
     {
+      category: "doctype",
       line: getLineNumber(html, match.index || 0),
       snippet: match[0],
+      start: match.index || 0,
+      end: (match.index || 0) + match[0].length,
       message:
         "Le doctype detecte ne correspond pas au XHTML 1.0 Transitional attendu.",
     },
@@ -599,11 +773,20 @@ function validateHtmlWithStandardRules(html) {
   const report = HTML_VALIDATOR.validateStringSync(html);
 
   return report.results.flatMap((result) =>
-    result.messages.map((message) => ({
-      line: message.line || 1,
-      snippet: getLineText(html, message.line || 1),
-      message: message.message,
-    })),
+    result.messages.map((message) => {
+      const line = message.line || 1;
+      const snippet = getLineText(html, line);
+      const range = resolveSnippetRangeOnLine(html, line, snippet);
+
+      return {
+        line,
+        snippet,
+        category: "html",
+        start: range.start,
+        end: range.end,
+        message: message.message,
+      };
+    }),
   );
 }
 
@@ -625,20 +808,33 @@ function validateHtmlRules(html) {
     const { attributes, duplicates, parsedAttributes } = parseHtmlAttributes(
       match[2] || "",
     );
+    const getTagRange = () => ({
+      start: match.index,
+      end: match.index + fullTag.length,
+    });
+    const getAttributeRange = (attribute) => ({
+      start: match.index + 1 + tagName.length + attribute.start,
+      end: match.index + 1 + tagName.length + attribute.end,
+    });
 
     if (
       !isKnownHtmlElement(tagName) &&
       !(useXhtmlTransitionalProfile && isCustomOrNamespacedTag(tagName))
     ) {
+      const tagRange = getTagRange();
       issues.push({
+        category: "tag",
         line,
         snippet: fullTag,
+        start: tagRange.start,
+        end: tagRange.end,
         message: `La balise "<${tagName}>" n'existe pas dans le profil HTML/XHTML attendu.`,
       });
       continue;
     }
 
-    parsedAttributes.forEach(({ name, value }) => {
+    parsedAttributes.forEach((attribute) => {
+      const { name, value } = attribute;
       if (isDynamicAttributeName(name)) {
         return;
       }
@@ -648,9 +844,13 @@ function validateHtmlRules(html) {
       }
 
       if (!isAllowedHtmlAttribute(tagName, name, useXhtmlTransitionalProfile)) {
+        const range = getAttributeRange(attribute);
         issues.push({
+          category: "attribute",
           line,
           snippet: fullTag,
+          start: range.start,
+          end: range.end,
           message: `L'attribut "${name}" n'existe pas sur la balise "<${tagName}>" dans le profil HTML/XHTML attendu.`,
         });
         return;
@@ -664,43 +864,70 @@ function validateHtmlRules(html) {
       );
 
       if (valueError) {
+        const range = getAttributeRange(attribute);
         issues.push({
+          category: "attribute",
           line,
           snippet: fullTag,
+          start: range.start,
+          end: range.end,
           message: `L'attribut "${name}" de la balise "<${tagName}>" a une valeur invalide. ${valueError}`,
         });
       }
     });
 
     duplicates.forEach((duplicate) => {
+      const attribute = parsedAttributes.find(
+        (parsedAttribute) =>
+          parsedAttribute.name === duplicate.name &&
+          parsedAttribute.value === duplicate.value,
+      );
+      const range = attribute ? getAttributeRange(attribute) : getTagRange();
       issues.push({
+        category: "attribute",
         line,
         snippet: fullTag,
+        start: range.start,
+        end: range.end,
         message: `L'attribut "${duplicate.name}" est defini plusieurs fois sur la meme balise.`,
       });
     });
 
     if (tagName === "img") {
       const src = normalizeUrlValue(attributes.src || "");
+      const srcAttribute = parsedAttributes.find(
+        (attribute) => attribute.name === "src",
+      );
+      const tagRange = getTagRange();
 
       if (!src) {
         issues.push({
+          category: "image",
           line,
           snippet: fullTag,
+          start: tagRange.start,
+          end: tagRange.end,
           message: `L'image doit avoir un attribut "src".`,
         });
       } else if (!isDynamicTwigValue(src) && !ABSOLUTE_IMAGE_SRC_REGEX.test(src)) {
+        const range = srcAttribute ? getAttributeRange(srcAttribute) : tagRange;
         issues.push({
+          category: "image",
           line,
           snippet: fullTag,
+          start: range.start,
+          end: range.end,
           message: `Le "src" de l'image doit etre absolu, pas relatif.`,
         });
       }
 
       if (!Object.prototype.hasOwnProperty.call(attributes, "alt")) {
         issues.push({
+          category: "image",
           line,
           snippet: fullTag,
+          start: tagRange.start,
+          end: tagRange.end,
           message: `L'image doit avoir un attribut "alt".`,
         });
       }
@@ -708,17 +935,28 @@ function validateHtmlRules(html) {
 
     if (tagName === "a") {
       const href = normalizeUrlValue(attributes.href || "");
+      const hrefAttribute = parsedAttributes.find(
+        (attribute) => attribute.name === "href",
+      );
+      const tagRange = getTagRange();
 
       if (!Object.prototype.hasOwnProperty.call(attributes, "href")) {
         issues.push({
+          category: "link",
           line,
           snippet: fullTag,
+          start: tagRange.start,
+          end: tagRange.end,
           message: `Le lien "<a>" doit avoir un attribut "href".`,
         });
       } else if (!href || href === "#") {
+        const range = hrefAttribute ? getAttributeRange(hrefAttribute) : tagRange;
         issues.push({
+          category: "link",
           line,
           snippet: fullTag,
+          start: range.start,
+          end: range.end,
           message: `Le lien "<a>" ne doit pas etre vide.`,
         });
       } else if (
@@ -728,9 +966,13 @@ function validateHtmlRules(html) {
         ) &&
         !HTTPS_LINK_REGEX.test(href)
       ) {
+        const range = hrefAttribute ? getAttributeRange(hrefAttribute) : tagRange;
         issues.push({
+          category: "link",
           line,
           snippet: fullTag,
+          start: range.start,
+          end: range.end,
           message: `Le lien doit utiliser HTTPS.`,
         });
       }
@@ -795,6 +1037,23 @@ function getWordAroundIndex(text, index) {
   return text.slice(start, end);
 }
 
+function getWordRangeAroundIndex(text, index) {
+  const isWordBoundary = (character) =>
+    !character || /[\s<>"'=\/(){}[\],;:!?]/.test(character);
+  let start = index;
+  let end = index + 1;
+
+  while (start > 0 && !isWordBoundary(text[start - 1])) {
+    start -= 1;
+  }
+
+  while (end < text.length && !isWordBoundary(text[end])) {
+    end += 1;
+  }
+
+  return { start, end };
+}
+
 function validateEncodedSpecialCharacters(html) {
   const issues = [];
   const ignoredRanges = getIgnoredSpecialCharacterRanges(html);
@@ -828,10 +1087,14 @@ function validateEncodedSpecialCharacters(html) {
       !isIndexInRanges(index, ignoredRanges)
     ) {
       const word = getWordAroundIndex(html, index);
+      const wordRange = getWordRangeAroundIndex(html, index);
 
       issues.push({
+        category: "encoding",
         line: getLineNumber(html, index),
         snippet: word || html[index],
+        start: word ? wordRange.start : index,
+        end: word ? wordRange.end : index + 1,
         message:
           "Le caractere special doit etre encode en entite HTML, sauf dans data-subject-email.",
       });
@@ -899,6 +1162,185 @@ function getCountBadgeClasses(hasIssues, accent = "rose") {
   }
 
   return "bg-rose-100 text-rose-700 ring-1 ring-inset ring-rose-200";
+}
+
+function getIssueCategoryMeta(category) {
+  return ISSUE_CATEGORY_META[category] || ISSUE_CATEGORY_META.html;
+}
+
+function getIssueSnippet(issue) {
+  if (issue.tag) {
+    return `{% ${issue.tag} %}`;
+  }
+
+  return issue.snippet || "";
+}
+
+function findSnippetNearIndex(text, snippet, preferredIndex = 0) {
+  if (!snippet) {
+    return -1;
+  }
+
+  if (preferredIndex >= 0 && text.slice(preferredIndex, preferredIndex + snippet.length) === snippet) {
+    return preferredIndex;
+  }
+
+  const directIndex = text.indexOf(snippet, Math.max(0, preferredIndex - snippet.length));
+
+  if (directIndex !== -1) {
+    return directIndex;
+  }
+
+  return text.indexOf(snippet);
+}
+
+function resolveIssueSelectionRange(text, issue) {
+  const snippet = getIssueSnippet(issue);
+
+  if (snippet) {
+    const lineStart = getLineStartIndex(text, issue.line || 1);
+    const lineEndIndex = text.indexOf("\n", lineStart);
+    const lineEnd = lineEndIndex === -1 ? text.length : lineEndIndex;
+    const snippetIndexOnLine = text.indexOf(snippet, lineStart);
+
+    if (snippetIndexOnLine !== -1 && snippetIndexOnLine <= lineEnd) {
+      return {
+        start: snippetIndexOnLine,
+        end: snippetIndexOnLine + snippet.length,
+      };
+    }
+
+    const anchorIndex =
+      typeof issue.start === "number" ? issue.start : lineStart;
+    const snippetIndex = findSnippetNearIndex(text, snippet, anchorIndex);
+
+    if (snippetIndex !== -1) {
+      return {
+        start: snippetIndex,
+        end: snippetIndex + snippet.length,
+      };
+    }
+  }
+
+  const fallbackRange = getLineSelectionRange(text, issue.line);
+
+  return clampSelectionRange(
+    text,
+    typeof issue.start === "number" ? issue.start : fallbackRange.start,
+    typeof issue.end === "number" ? issue.end : fallbackRange.end,
+  );
+}
+
+function filterIssuesByCategory(issues, activeCategory) {
+  if (activeCategory === "all") {
+    return issues;
+  }
+
+  return issues.filter((issue) => issue.category === activeCategory);
+}
+
+function getIssueCountLabel(visibleCount, totalCount) {
+  if (visibleCount === totalCount) {
+    return `${totalCount} erreur(s)`;
+  }
+
+  return `${visibleCount} / ${totalCount} erreur(s)`;
+}
+
+function clampSelectionRange(text, start, end) {
+  const safeStart = Math.max(0, Math.min(start, text.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, text.length));
+
+  return {
+    start: safeStart,
+    end: safeEnd,
+  };
+}
+
+function getLineSelectionRange(text, lineNumber) {
+  if (lineNumber <= 1) {
+    const firstBreak = text.indexOf("\n");
+
+    return {
+      start: 0,
+      end: firstBreak === -1 ? text.length : firstBreak,
+    };
+  }
+
+  let currentLine = 1;
+  let start = 0;
+
+  while (currentLine < lineNumber && start < text.length) {
+    const nextBreak = text.indexOf("\n", start);
+
+    if (nextBreak === -1) {
+      return {
+        start: text.length,
+        end: text.length,
+      };
+    }
+
+    start = nextBreak + 1;
+    currentLine += 1;
+  }
+
+  const end = text.indexOf("\n", start);
+
+  return {
+    start,
+    end: end === -1 ? text.length : end,
+  };
+}
+
+function downloadFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+function renderTextareaHighlightOverlay(
+  value,
+  activeFocus,
+  mirrorRef,
+  markerRef,
+) {
+  if (!activeFocus) {
+    return null;
+  }
+
+  const { start, end } = clampSelectionRange(value, activeFocus.start, activeFocus.end);
+  const before = value.slice(0, start);
+  const highlighted = value.slice(start, end);
+  const after = value.slice(end);
+
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded-[1.5rem]"
+    >
+      <pre
+        ref={mirrorRef}
+        className="min-h-[26rem] min-w-full w-max px-4 py-4 font-mono text-sm leading-6 text-slate-100"
+        style={{ transform: "translate(0px, 0px)", willChange: "transform" }}
+      >
+        <span>{before}</span>
+        <mark
+          ref={markerRef}
+          className="rounded bg-blue-300/70 text-slate-950 shadow-[0_0_0_1px_rgba(96,165,250,0.55)]"
+        >
+          {highlighted || " "}
+        </mark>
+        <span>{after}</span>
+      </pre>
+    </div>
+  );
 }
 
 function renderRows(keys, dataA, dataB, options = {}) {
@@ -1039,53 +1481,42 @@ function renderRows(keys, dataA, dataB, options = {}) {
   });
 }
 
-function renderValidationIssues(issues) {
+function renderIssueList(issues, options = {}) {
+  const { emptyMessage, onSelectLine } = options;
+
   if (!issues.length) {
     return (
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-        Aucune erreur Twig detectee.
+        {emptyMessage}
       </div>
     );
   }
 
   return issues.map((issue, index) => (
-    <div
-      key={`${issue.line}-${issue.tag}-${index}`}
-      className="rounded-2xl border border-rose-200 bg-white/85 px-4 py-3 shadow-sm"
+    <button
+      type="button"
+      key={`${issue.line}-${issue.category}-${index}`}
+      onClick={() => onSelectLine?.(issue)}
+      className="w-full rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
     >
-      <div className="text-sm font-semibold text-slate-900">
-        Ligne {issue.line}
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm font-semibold text-slate-900">
+          Ligne {issue.line}
+        </div>
+        <div
+          className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getIssueCategoryMeta(issue.category).badge}`}
+        >
+          {getIssueCategoryMeta(issue.category).label}
+        </div>
       </div>
       <div className="mt-1 text-sm text-slate-700">{issue.message}</div>
       <div className="mt-2 rounded-xl bg-slate-950 px-3 py-2 text-xs text-slate-100">
-        {`{% ${issue.tag} %}`}
+        {getIssueSnippet(issue)}
       </div>
-    </div>
-  ));
-}
-
-function renderHtmlIssueList(issues) {
-  if (!issues.length) {
-    return (
-      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-        Aucune erreur HTML detectee.
+      <div className="mt-2 text-xs font-medium text-slate-500">
+        Cliquer pour aller a la ligne
       </div>
-    );
-  }
-
-  return issues.map((issue, index) => (
-    <div
-      key={`${issue.line}-${issue.snippet}-${index}`}
-      className="rounded-2xl border border-amber-200 bg-white/85 px-4 py-3 shadow-sm"
-    >
-      <div className="text-sm font-semibold text-slate-900">
-        Ligne {issue.line}
-      </div>
-      <div className="mt-1 text-sm text-slate-700">{issue.message}</div>
-      <div className="mt-2 rounded-xl bg-slate-950 px-3 py-2 text-xs text-slate-100">
-        {issue.snippet}
-      </div>
-    </div>
+    </button>
   ));
 }
 
@@ -1093,24 +1524,85 @@ export default function App() {
   const [emailA, setEmailA] = useState("");
   const [emailB, setEmailB] = useState("");
   const [viewMode, setViewMode] = useState("single");
+  const [activeIssueFilter, setActiveIssueFilter] = useState("all");
+  const [activeFocus, setActiveFocus] = useState(null);
+  const [validationState, setValidationState] = useState(EMPTY_VALIDATION_STATE);
+  const [isValidationPending, setIsValidationPending] = useState(false);
+  const textareaARef = useRef(null);
+  const textareaBRef = useRef(null);
+  const editorARef = useRef(null);
+  const editorBRef = useRef(null);
+  const mirrorARef = useRef(null);
+  const mirrorBRef = useRef(null);
+  const highlightARef = useRef(null);
+  const highlightBRef = useRef(null);
+  const validationWorkerRef = useRef(null);
+  const validationRequestIdRef = useRef(0);
+  const validationResponseIdRef = useRef(0);
   const isDoubleView = viewMode === "double";
-  const deferredEmailA = useDeferredValue(emailA);
-  const deferredEmailB = useDeferredValue(emailB);
-
-  const varsA = countTwigVariables(deferredEmailA);
-  const varsB = countTwigVariables(deferredEmailB);
-
-  const condA = countTwigConditions(deferredEmailA);
-  const condB = countTwigConditions(deferredEmailB);
-  const validationA = validateTwigControlStructures(deferredEmailA);
-  const validationB = validateTwigControlStructures(deferredEmailB);
-  const htmlValidationA = [
-    ...validateHtmlRules(deferredEmailA),
-    ...validateEncodedSpecialCharacters(deferredEmailA),
-  ];
-  const htmlValidationB = [
-    ...validateHtmlRules(deferredEmailB),
-    ...validateEncodedSpecialCharacters(deferredEmailB),
+  const debouncedEmailA = useDebouncedValue(emailA, 180);
+  const debouncedEmailB = useDebouncedValue(emailB, 180);
+  const {
+    varsA,
+    varsB,
+    condA,
+    condB,
+    validationA,
+    validationB,
+    htmlValidationA,
+    htmlValidationB,
+    conditionBalanceA,
+    conditionBalanceB,
+  } = validationState;
+  const scopedTwigIssuesA = validationA.map((issue) => ({
+    ...issue,
+    source: "A",
+    scope: "Twig",
+  }));
+  const scopedTwigIssuesB = validationB.map((issue) => ({
+    ...issue,
+    source: "B",
+    scope: "Twig",
+  }));
+  const scopedHtmlIssuesA = htmlValidationA.map((issue) => ({
+    ...issue,
+    source: "A",
+    scope: "HTML",
+  }));
+  const scopedHtmlIssuesB = htmlValidationB.map((issue) => ({
+    ...issue,
+    source: "B",
+    scope: "HTML",
+  }));
+  const allIssues = isDoubleView
+    ? [
+        ...scopedTwigIssuesA,
+        ...scopedHtmlIssuesA,
+        ...scopedTwigIssuesB,
+        ...scopedHtmlIssuesB,
+      ]
+    : [...scopedTwigIssuesA, ...scopedHtmlIssuesA];
+  const filteredValidationA = filterIssuesByCategory(validationA, activeIssueFilter);
+  const filteredValidationB = filterIssuesByCategory(validationB, activeIssueFilter);
+  const filteredHtmlValidationA = filterIssuesByCategory(
+    htmlValidationA,
+    activeIssueFilter,
+  );
+  const filteredHtmlValidationB = filterIssuesByCategory(
+    htmlValidationB,
+    activeIssueFilter,
+  );
+  const issueFilterOptions = [
+    {
+      id: "all",
+      label: "Tout",
+      count: allIssues.length,
+    },
+    ...ISSUE_FILTER_ORDER.map((category) => ({
+      id: category,
+      label: getIssueCategoryMeta(category).label,
+      count: allIssues.filter((issue) => issue.category === category).length,
+    })),
   ];
 
   const varKeys = isDoubleView
@@ -1120,8 +1612,6 @@ export default function App() {
   const condKeys = isDoubleView
     ? Array.from(new Set([...Object.keys(condA), ...Object.keys(condB)]))
     : Object.keys(condA);
-  const conditionBalanceA = getConditionBalance(condA);
-  const conditionBalanceB = getConditionBalance(condB);
   const summaryCards = isDoubleView
     ? [
         {
@@ -1148,6 +1638,14 @@ export default function App() {
           suffix: "erreur(s)",
           tone: getCountBadgeClasses(htmlValidationB.length > 0, "amber"),
         },
+        {
+          label: "Validation",
+          value: isValidationPending ? "..." : "OK",
+          suffix: isValidationPending ? "analyse" : "a jour",
+          tone: isValidationPending
+            ? "bg-sky-100 text-sky-700 ring-1 ring-inset ring-sky-200"
+            : "bg-emerald-100 text-emerald-700 ring-1 ring-inset ring-emerald-200",
+        },
       ]
     : [
         {
@@ -1170,7 +1668,260 @@ export default function App() {
             ? "bg-emerald-100 text-emerald-700 ring-1 ring-inset ring-emerald-200"
             : "bg-rose-100 text-rose-700 ring-1 ring-inset ring-rose-200",
         },
+        {
+          label: "Validation",
+          value: isValidationPending ? "..." : "OK",
+          suffix: isValidationPending ? "analyse" : "a jour",
+          tone: isValidationPending
+            ? "bg-sky-100 text-sky-700 ring-1 ring-inset ring-sky-200"
+            : "bg-emerald-100 text-emerald-700 ring-1 ring-inset ring-emerald-200",
+        },
       ];
+  const syncMirrorScroll = (target, scrollTop, scrollLeft) => {
+    const mirror = target === "B" ? mirrorBRef.current : mirrorARef.current;
+
+    if (!mirror) {
+      return;
+    }
+
+    mirror.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
+  };
+
+  useEffect(() => {
+    const validationWorker = new Worker(
+      new URL("./workers/validationWorker.js", import.meta.url),
+      { type: "module" },
+    );
+
+    validationWorkerRef.current = validationWorker;
+
+    validationWorker.onmessage = (event) => {
+      const { requestId, result } = event.data;
+
+      if (requestId < validationResponseIdRef.current) {
+        return;
+      }
+
+      validationResponseIdRef.current = requestId;
+
+      startTransition(() => {
+        setValidationState(result || EMPTY_VALIDATION_STATE);
+        setIsValidationPending(false);
+      });
+    };
+
+    validationWorker.onerror = () => {
+      setIsValidationPending(false);
+    };
+
+    return () => {
+      validationWorker.terminate();
+      validationWorkerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const validationWorker = validationWorkerRef.current;
+    const emailForB = isDoubleView ? debouncedEmailB : "";
+
+    if (!validationWorker) {
+      return;
+    }
+
+    const requestId = validationRequestIdRef.current + 1;
+    validationRequestIdRef.current = requestId;
+
+    if (!debouncedEmailA && !emailForB) {
+      validationResponseIdRef.current = requestId;
+
+      startTransition(() => {
+        setValidationState(EMPTY_VALIDATION_STATE);
+        setIsValidationPending(false);
+      });
+      return;
+    }
+
+    setIsValidationPending(true);
+    validationWorker.postMessage({
+      requestId,
+      emailA: debouncedEmailA,
+      emailB: emailForB,
+      isDoubleView,
+    });
+  }, [debouncedEmailA, debouncedEmailB, isDoubleView]);
+
+  const focusIssue = (target, issue) => {
+    const textarea = target === "B" ? textareaBRef.current : textareaARef.current;
+    const content = textarea?.value || "";
+
+    if (!textarea) {
+      return;
+    }
+
+    const range = resolveIssueSelectionRange(content, issue);
+    const lineNumber = issue.line || getLineNumber(content, range.start);
+
+    setActiveFocus({
+      target,
+      line: lineNumber,
+      start: range.start,
+      end: range.end,
+      label: getIssueCategoryMeta(issue.category).label,
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!activeFocus) {
+      return;
+    }
+
+    const textarea =
+      activeFocus.target === "B" ? textareaBRef.current : textareaARef.current;
+    const editor = activeFocus.target === "B" ? editorBRef.current : editorARef.current;
+    const highlight =
+      activeFocus.target === "B" ? highlightBRef.current : highlightARef.current;
+
+    if (!textarea || !editor) {
+      return;
+    }
+
+    editor.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+
+    const applySelection = () => {
+      textarea.focus();
+      textarea.setSelectionRange(activeFocus.start, activeFocus.end);
+
+      if (highlight) {
+        const targetTop = Math.max(
+          0,
+          highlight.offsetTop - textarea.clientHeight * 0.35,
+        );
+        const targetLeft = Math.max(0, highlight.offsetLeft - 48);
+        textarea.scrollTop = targetTop;
+        textarea.scrollLeft = targetLeft;
+        syncMirrorScroll(activeFocus.target, targetTop, targetLeft);
+      }
+    };
+
+    requestAnimationFrame(applySelection);
+  }, [activeFocus]);
+
+  useLayoutEffect(() => {
+    if (textareaARef.current) {
+      syncMirrorScroll(
+        "A",
+        textareaARef.current.scrollTop,
+        textareaARef.current.scrollLeft,
+      );
+    }
+
+    if (textareaBRef.current) {
+      syncMirrorScroll(
+        "B",
+        textareaBRef.current.scrollTop,
+        textareaBRef.current.scrollLeft,
+      );
+    }
+  }, [emailA, emailB, activeFocus, isDoubleView]);
+
+  const buildReportPayload = () => {
+    const currentDate = new Date().toISOString();
+    const visibleIssues = allIssues.filter((issue) =>
+      activeIssueFilter === "all" ? true : issue.category === activeIssueFilter,
+    );
+
+    return {
+      generatedAt: currentDate,
+      project: "TwigGuard",
+      viewMode,
+      filter:
+        activeIssueFilter === "all"
+          ? "Toutes les categories"
+          : getIssueCategoryMeta(activeIssueFilter).label,
+      summary: {
+        emailA: {
+          twigErrors: validationA.length,
+          htmlErrors: htmlValidationA.length,
+          balance: conditionBalanceA,
+        },
+        ...(isDoubleView
+          ? {
+              emailB: {
+                twigErrors: validationB.length,
+                htmlErrors: htmlValidationB.length,
+                balance: conditionBalanceB,
+              },
+            }
+          : {}),
+      },
+      issues: visibleIssues.map((issue) => ({
+        source: isDoubleView ? `Email ${issue.source}` : "Email",
+        scope: issue.scope,
+        category: getIssueCategoryMeta(issue.category).label,
+        line: issue.line,
+        message: issue.message,
+        snippet: getIssueSnippet(issue),
+      })),
+    };
+  };
+
+  const exportReport = (format) => {
+    const payload = buildReportPayload();
+    const timestamp = payload.generatedAt.replace(/[:.]/g, "-");
+
+    if (format === "json") {
+      downloadFile(
+        `${JSON.stringify(payload, null, 2)}\n`,
+        `twigguard-report-${timestamp}.json`,
+        "application/json",
+      );
+      return;
+    }
+
+    const lines = [
+      "TwigGuard",
+      `Genere le: ${payload.generatedAt}`,
+      `Vue: ${payload.viewMode === "double" ? "double" : "simple"}`,
+      `Filtre: ${payload.filter}`,
+      "",
+      "Resume",
+      `Email A - Twig: ${validationA.length} erreur(s)`,
+      `Email A - HTML: ${htmlValidationA.length} erreur(s)`,
+      `Email A - Equilibre: ${conditionBalanceA.isBalanced ? "OK" : "KO"} (${conditionBalanceA.ifTotal}/${conditionBalanceA.endifTotal} if, ${conditionBalanceA.forTotal}/${conditionBalanceA.endforTotal} for)`,
+    ];
+
+    if (isDoubleView) {
+      lines.push(
+        `Email B - Twig: ${validationB.length} erreur(s)`,
+        `Email B - HTML: ${htmlValidationB.length} erreur(s)`,
+        `Email B - Equilibre: ${conditionBalanceB.isBalanced ? "OK" : "KO"} (${conditionBalanceB.ifTotal}/${conditionBalanceB.endifTotal} if, ${conditionBalanceB.forTotal}/${conditionBalanceB.endforTotal} for)`,
+      );
+    }
+
+    lines.push("", "Erreurs");
+
+    if (!payload.issues.length) {
+      lines.push("Aucune erreur pour le filtre courant.");
+    } else {
+      payload.issues.forEach((issue, index) => {
+        lines.push(
+          `${index + 1}. [${issue.source}] [${issue.scope}] [${issue.category}] Ligne ${issue.line}`,
+          issue.message,
+          issue.snippet ? `Snippet: ${issue.snippet}` : "Snippet: —",
+          "",
+        );
+      });
+    }
+
+    downloadFile(
+      `${lines.join("\n")}\n`,
+      `twigguard-report-${timestamp}.txt`,
+      "text/plain;charset=utf-8",
+    );
+  };
 
   return (
     <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
@@ -1226,7 +1977,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="grid gap-4 px-6 py-6 sm:grid-cols-2 xl:grid-cols-4 lg:px-8">
+          <div className={`grid gap-4 px-6 py-6 ${isDoubleView ? "sm:grid-cols-2 xl:grid-cols-5" : "sm:grid-cols-2 xl:grid-cols-4"} lg:px-8`}>
             {summaryCards.map((card) => (
               <div
                 key={card.label}
@@ -1253,7 +2004,14 @@ export default function App() {
         <section
           className={`grid gap-6 ${isDoubleView ? "xl:grid-cols-2" : "grid-cols-1"}`}
         >
-          <div className="rounded-[2rem] border border-slate-200 bg-white/80 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur">
+          <div
+            ref={editorARef}
+            className={`rounded-[2rem] border bg-white/80 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur transition ${
+              activeFocus?.target === "A"
+                ? "border-blue-400 ring-4 ring-blue-100"
+                : "border-slate-200"
+            }`}
+          >
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-slate-950">
@@ -1264,20 +2022,56 @@ export default function App() {
                 </p>
               </div>
               <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                {deferredEmailA.length.toLocaleString("fr-FR")} caracteres
+                {emailA.length.toLocaleString("fr-FR")} caracteres
               </div>
             </div>
-            <textarea
-              placeholder="Colle ici ton email HTML"
-              value={emailA}
-              onChange={(e) => setEmailA(e.target.value)}
-              rows={18}
-              className="min-h-[26rem] w-full rounded-[1.5rem] border border-slate-200 bg-slate-950 px-4 py-4 text-sm leading-6 text-slate-100 shadow-inner outline-none transition placeholder:text-slate-500 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-            />
+            {activeFocus?.target === "A" ? (
+              <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                Zone ciblee: ligne {activeFocus.line}, caracteres {activeFocus.start + 1} a {activeFocus.end}
+              </div>
+            ) : null}
+            <div className="relative overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-950 shadow-inner">
+              {renderTextareaHighlightOverlay(
+                emailA,
+                activeFocus?.target === "A" ? activeFocus : null,
+                mirrorARef,
+                highlightARef,
+              )}
+              <textarea
+                ref={textareaARef}
+                placeholder="Colle ici ton email HTML"
+                value={emailA}
+                onChange={(e) => {
+                  if (activeFocus?.target === "A") {
+                    setActiveFocus(null);
+                  }
+                  setEmailA(e.target.value);
+                  syncMirrorScroll("A", e.target.scrollTop, e.target.scrollLeft);
+                }}
+                onScroll={(e) => {
+                  if (activeFocus?.target === "A") {
+                    syncMirrorScroll("A", e.target.scrollTop, e.target.scrollLeft);
+                  }
+                }}
+                spellCheck={false}
+                wrap="off"
+                rows={18}
+                className={`relative z-10 min-h-[26rem] w-full resize-y rounded-[1.5rem] bg-transparent px-4 py-4 font-mono text-sm leading-6 caret-slate-100 outline-none transition placeholder:text-slate-500 focus:ring-4 focus:ring-blue-100 ${
+                  activeFocus?.target === "A" ? "text-transparent" : "text-slate-100"
+                }`}
+              />
+            </div>
           </div>
 
           {isDoubleView ? (
-            <div className="rounded-[2rem] border border-slate-200 bg-white/80 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur">
+            <div
+              ref={editorBRef}
+              className={`rounded-[2rem] border bg-white/80 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur transition ${
+                activeFocus?.target === "B"
+                  ? "border-blue-400 ring-4 ring-blue-100"
+                  : "border-slate-200"
+              }`}
+            >
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-semibold text-slate-950">
@@ -1288,18 +2082,102 @@ export default function App() {
                   </p>
                 </div>
                 <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                  {deferredEmailB.length.toLocaleString("fr-FR")} caracteres
+                  {emailB.length.toLocaleString("fr-FR")} caracteres
                 </div>
               </div>
-              <textarea
-                placeholder="Colle ici le second email HTML"
-                value={emailB}
-                onChange={(e) => setEmailB(e.target.value)}
-                rows={18}
-                className="min-h-[26rem] w-full rounded-[1.5rem] border border-slate-200 bg-slate-950 px-4 py-4 text-sm leading-6 text-slate-100 shadow-inner outline-none transition placeholder:text-slate-500 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-              />
+              {activeFocus?.target === "B" ? (
+                <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                  Zone ciblee: ligne {activeFocus.line}, caracteres {activeFocus.start + 1} a {activeFocus.end}
+                </div>
+              ) : null}
+              <div className="relative overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-950 shadow-inner">
+                {renderTextareaHighlightOverlay(
+                  emailB,
+                  activeFocus?.target === "B" ? activeFocus : null,
+                  mirrorBRef,
+                  highlightBRef,
+                )}
+                <textarea
+                  ref={textareaBRef}
+                  placeholder="Colle ici le second email HTML"
+                  value={emailB}
+                  onChange={(e) => {
+                    if (activeFocus?.target === "B") {
+                      setActiveFocus(null);
+                    }
+                    setEmailB(e.target.value);
+                    syncMirrorScroll("B", e.target.scrollTop, e.target.scrollLeft);
+                  }}
+                  onScroll={(e) => {
+                    if (activeFocus?.target === "B") {
+                      syncMirrorScroll("B", e.target.scrollTop, e.target.scrollLeft);
+                    }
+                  }}
+                  spellCheck={false}
+                  wrap="off"
+                  rows={18}
+                  className={`relative z-10 min-h-[26rem] w-full resize-y rounded-[1.5rem] bg-transparent px-4 py-4 font-mono text-sm leading-6 caret-slate-100 outline-none transition placeholder:text-slate-500 focus:ring-4 focus:ring-blue-100 ${
+                    activeFocus?.target === "B" ? "text-transparent" : "text-slate-100"
+                  }`}
+                />
+              </div>
             </div>
           ) : null}
+        </section>
+
+        <section className="rounded-[2rem] border border-slate-200 bg-white/85 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] backdrop-blur">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">
+                Filtres et rapport
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Filtre les erreurs par categorie et exporte le controle courant.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => exportReport("txt")}
+                className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:text-slate-950"
+              >
+                Export TXT
+              </button>
+              <button
+                type="button"
+                onClick={() => exportReport("json")}
+                className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Export JSON
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-2">
+            {issueFilterOptions.map((option) => {
+              const isActive = activeIssueFilter === option.id;
+              const isDisabled = option.id !== "all" && option.count === 0;
+
+              return (
+                <button
+                  type="button"
+                  key={option.id}
+                  onClick={() => setActiveIssueFilter(option.id)}
+                  disabled={isDisabled}
+                  className={`rounded-full px-3 py-2 text-sm font-medium transition ${
+                    isActive
+                      ? "bg-slate-950 text-white shadow-sm"
+                      : isDisabled
+                        ? "cursor-not-allowed bg-slate-100 text-slate-400"
+                        : "bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-950"
+                  }`}
+                >
+                  {option.label} ({option.count})
+                </button>
+              );
+            })}
+          </div>
         </section>
 
         <section className="grid gap-6 xl:grid-cols-2">
@@ -1318,10 +2196,18 @@ export default function App() {
               <div
                 className={`rounded-full px-3 py-1 text-xs font-semibold ${getCountBadgeClasses(validationA.length > 0)}`}
               >
-                {validationA.length} erreur(s)
+                {getIssueCountLabel(filteredValidationA.length, validationA.length)}
               </div>
             </div>
-            <div className="space-y-3">{renderValidationIssues(validationA)}</div>
+            <div className="space-y-3">
+              {renderIssueList(filteredValidationA, {
+                emptyMessage:
+                  validationA.length > 0
+                    ? "Aucune erreur Twig pour ce filtre."
+                    : "Aucune erreur Twig detectee.",
+                onSelectLine: (issue) => focusIssue("A", issue),
+              })}
+            </div>
           </div>
 
           <div
@@ -1346,13 +2232,30 @@ export default function App() {
                     : getCountBadgeClasses(htmlValidationA.length > 0, "amber")
                 }`}
               >
-                {isDoubleView ? validationB.length : htmlValidationA.length} erreur(s)
+                {isDoubleView
+                  ? getIssueCountLabel(filteredValidationB.length, validationB.length)
+                  : getIssueCountLabel(
+                      filteredHtmlValidationA.length,
+                      htmlValidationA.length,
+                    )}
               </div>
             </div>
             <div className="space-y-3">
               {isDoubleView
-                ? renderValidationIssues(validationB)
-                : renderHtmlIssueList(htmlValidationA)}
+                ? renderIssueList(filteredValidationB, {
+                    emptyMessage:
+                      validationB.length > 0
+                        ? "Aucune erreur Twig pour ce filtre."
+                        : "Aucune erreur Twig detectee.",
+                    onSelectLine: (issue) => focusIssue("B", issue),
+                  })
+                : renderIssueList(filteredHtmlValidationA, {
+                    emptyMessage:
+                      htmlValidationA.length > 0
+                        ? "Aucune erreur HTML pour ce filtre."
+                        : "Aucune erreur HTML detectee.",
+                    onSelectLine: (issue) => focusIssue("A", issue),
+                  })}
             </div>
           </div>
         </section>
@@ -1372,10 +2275,21 @@ export default function App() {
                 <div
                   className={`rounded-full px-3 py-1 text-xs font-semibold ${getCountBadgeClasses(htmlValidationA.length > 0, "amber")}`}
                 >
-                  {htmlValidationA.length} erreur(s)
+                  {getIssueCountLabel(
+                    filteredHtmlValidationA.length,
+                    htmlValidationA.length,
+                  )}
                 </div>
               </div>
-              <div className="space-y-3">{renderHtmlIssueList(htmlValidationA)}</div>
+              <div className="space-y-3">
+                {renderIssueList(filteredHtmlValidationA, {
+                  emptyMessage:
+                    htmlValidationA.length > 0
+                      ? "Aucune erreur HTML pour ce filtre."
+                      : "Aucune erreur HTML detectee.",
+                  onSelectLine: (issue) => focusIssue("A", issue),
+                })}
+              </div>
             </div>
 
             <div
@@ -1391,14 +2305,24 @@ export default function App() {
                 <div
                   className={`rounded-full px-3 py-1 text-xs font-semibold ${getCountBadgeClasses(htmlValidationB.length > 0, "amber")}`}
                 >
-                  {htmlValidationB.length} erreur(s)
+                  {getIssueCountLabel(
+                    filteredHtmlValidationB.length,
+                    htmlValidationB.length,
+                  )}
                 </div>
               </div>
-              <div className="space-y-3">{renderHtmlIssueList(htmlValidationB)}</div>
+              <div className="space-y-3">
+                {renderIssueList(filteredHtmlValidationB, {
+                  emptyMessage:
+                    htmlValidationB.length > 0
+                      ? "Aucune erreur HTML pour ce filtre."
+                      : "Aucune erreur HTML detectee.",
+                  onSelectLine: (issue) => focusIssue("B", issue),
+                })}
+              </div>
             </div>
           </section>
         ) : null}
-
         <section className="rounded-[2rem] border border-slate-200 bg-white/85 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] backdrop-blur">
           <div className="mb-4 flex items-end justify-between gap-4">
             <div>
