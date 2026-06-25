@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useDeferredValue, useState } from "react";
 import { HtmlValidate } from "html-validate/browser";
 import html5Elements from "html-validate/elements/html5";
+import twigGuardLogo from "./assets/twigguard-logo.svg";
 
 const TWIG_CONTROL_KEYWORDS = new Set([
   "if",
@@ -853,11 +854,19 @@ function sumRawCounts(entry) {
 function getConditionBalance(data) {
   const ifTotal = sumRawCounts(data.if);
   const endifTotal = sumRawCounts(data.endif);
+  const forTotal = sumRawCounts(data.for);
+  const endforTotal = sumRawCounts(data.endfor);
+  const isIfBalanced = ifTotal === endifTotal;
+  const isForBalanced = forTotal === endforTotal;
 
   return {
     ifTotal,
     endifTotal,
-    isBalanced: ifTotal === endifTotal,
+    forTotal,
+    endforTotal,
+    isIfBalanced,
+    isForBalanced,
+    isBalanced: isIfBalanced && isForBalanced,
   };
 }
 
@@ -866,6 +875,30 @@ function getBalanceCellStyle(isBalanced) {
     background: isBalanced ? "#e5ffe5" : "#ffe5e5",
     padding: 8,
   };
+}
+
+function getIssuePanelClasses(hasIssues, accent = "rose") {
+  if (!hasIssues) {
+    return "border-emerald-200 bg-emerald-50/80";
+  }
+
+  if (accent === "amber") {
+    return "border-amber-200 bg-amber-50/80";
+  }
+
+  return "border-rose-200 bg-rose-50/80";
+}
+
+function getCountBadgeClasses(hasIssues, accent = "rose") {
+  if (!hasIssues) {
+    return "bg-emerald-100 text-emerald-700 ring-1 ring-inset ring-emerald-200";
+  }
+
+  if (accent === "amber") {
+    return "bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200";
+  }
+
+  return "bg-rose-100 text-rose-700 ring-1 ring-inset ring-rose-200";
 }
 
 function renderRows(keys, dataA, dataB, options = {}) {
@@ -883,6 +916,7 @@ function renderRows(keys, dataA, dataB, options = {}) {
     return (
       <tr
         key={key}
+        className="transition-colors"
         style={{
           background: isComparison
             ? isDifferent
@@ -892,11 +926,11 @@ function renderRows(keys, dataA, dataB, options = {}) {
           verticalAlign: "top",
         }}
       >
-        <td>
+        <td className="border-b border-slate-200 px-4 py-3 text-sm text-slate-800">
           <strong>{key}</strong>
         </td>
 
-        <td>
+        <td className="border-b border-slate-200 px-4 py-3 text-sm text-slate-700">
           {a
             ? Object.entries(a.raws).map(([expr, count]) => (
                 <div key={expr}>
@@ -907,7 +941,7 @@ function renderRows(keys, dataA, dataB, options = {}) {
         </td>
 
         {isComparison ? (
-          <td>
+          <td className="border-b border-slate-200 px-4 py-3 text-sm text-slate-700">
             {b
               ? Object.entries(b.raws).map(([expr, count]) => (
                   <div key={expr}>
@@ -919,7 +953,7 @@ function renderRows(keys, dataA, dataB, options = {}) {
         ) : null}
 
         {showTotals ? (
-          <td>
+          <td className="border-b border-slate-200 px-4 py-3 text-sm text-slate-700">
             {isComparison && key === "if" ? (
               <>
                 <div style={getBalanceCellStyle(balanceA.isBalanced)}>
@@ -934,29 +968,70 @@ function renderRows(keys, dataA, dataB, options = {}) {
 
             {isComparison && key === "endif" ? (
               <>
-                <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+                <div style={getBalanceCellStyle(balanceA.isIfBalanced)}>
                   Endif total A: {balanceA.endifTotal}
                 </div>
                 <div style={{ height: 8 }} />
-                <div style={getBalanceCellStyle(balanceB.isBalanced)}>
+                <div style={getBalanceCellStyle(balanceB.isIfBalanced)}>
                   Endif total B: {balanceB.endifTotal}
                 </div>
               </>
             ) : null}
 
+            {isComparison && key === "for" ? (
+              <>
+                <div style={getBalanceCellStyle(balanceA.isForBalanced)}>
+                  For total A: {balanceA.forTotal}
+                </div>
+                <div style={{ height: 8 }} />
+                <div style={getBalanceCellStyle(balanceB.isForBalanced)}>
+                  For total B: {balanceB.forTotal}
+                </div>
+              </>
+            ) : null}
+
+            {isComparison && key === "endfor" ? (
+              <>
+                <div style={getBalanceCellStyle(balanceA.isForBalanced)}>
+                  Endfor total A: {balanceA.endforTotal}
+                </div>
+                <div style={{ height: 8 }} />
+                <div style={getBalanceCellStyle(balanceB.isForBalanced)}>
+                  Endfor total B: {balanceB.endforTotal}
+                </div>
+              </>
+            ) : null}
+
             {!isComparison && key === "if" ? (
-              <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+              <div style={getBalanceCellStyle(balanceA.isIfBalanced)}>
                 If total: {balanceA.ifTotal}
               </div>
             ) : null}
 
             {!isComparison && key === "endif" ? (
-              <div style={getBalanceCellStyle(balanceA.isBalanced)}>
+              <div style={getBalanceCellStyle(balanceA.isIfBalanced)}>
                 Endif total: {balanceA.endifTotal}
               </div>
             ) : null}
 
-            {key !== "if" && key !== "endif" ? "—" : null}
+            {!isComparison && key === "for" ? (
+              <div style={getBalanceCellStyle(balanceA.isForBalanced)}>
+                For total: {balanceA.forTotal}
+              </div>
+            ) : null}
+
+            {!isComparison && key === "endfor" ? (
+              <div style={getBalanceCellStyle(balanceA.isForBalanced)}>
+                Endfor total: {balanceA.endforTotal}
+              </div>
+            ) : null}
+
+            {key !== "if" &&
+            key !== "endif" &&
+            key !== "for" &&
+            key !== "endfor"
+              ? "—"
+              : null}
           </td>
         ) : null}
       </tr>
@@ -966,29 +1041,50 @@ function renderRows(keys, dataA, dataB, options = {}) {
 
 function renderValidationIssues(issues) {
   if (!issues.length) {
-    return <div>Aucune erreur Twig detectee.</div>;
+    return (
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+        Aucune erreur Twig detectee.
+      </div>
+    );
   }
 
   return issues.map((issue, index) => (
-    <div key={`${issue.line}-${issue.tag}-${index}`} style={{ marginBottom: 8 }}>
-      <strong>Ligne {issue.line}</strong>: {issue.message}
-      <div>{`{% ${issue.tag} %}`}</div>
+    <div
+      key={`${issue.line}-${issue.tag}-${index}`}
+      className="rounded-2xl border border-rose-200 bg-white/85 px-4 py-3 shadow-sm"
+    >
+      <div className="text-sm font-semibold text-slate-900">
+        Ligne {issue.line}
+      </div>
+      <div className="mt-1 text-sm text-slate-700">{issue.message}</div>
+      <div className="mt-2 rounded-xl bg-slate-950 px-3 py-2 text-xs text-slate-100">
+        {`{% ${issue.tag} %}`}
+      </div>
     </div>
   ));
 }
 
 function renderHtmlIssueList(issues) {
   if (!issues.length) {
-    return <div>Aucune erreur HTML detectee.</div>;
+    return (
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+        Aucune erreur HTML detectee.
+      </div>
+    );
   }
 
   return issues.map((issue, index) => (
     <div
       key={`${issue.line}-${issue.snippet}-${index}`}
-      style={{ marginBottom: 8 }}
+      className="rounded-2xl border border-amber-200 bg-white/85 px-4 py-3 shadow-sm"
     >
-      <strong>Ligne {issue.line}</strong>: {issue.message}
-      <div>{issue.snippet}</div>
+      <div className="text-sm font-semibold text-slate-900">
+        Ligne {issue.line}
+      </div>
+      <div className="mt-1 text-sm text-slate-700">{issue.message}</div>
+      <div className="mt-2 rounded-xl bg-slate-950 px-3 py-2 text-xs text-slate-100">
+        {issue.snippet}
+      </div>
     </div>
   ));
 }
@@ -998,21 +1094,23 @@ export default function App() {
   const [emailB, setEmailB] = useState("");
   const [viewMode, setViewMode] = useState("single");
   const isDoubleView = viewMode === "double";
+  const deferredEmailA = useDeferredValue(emailA);
+  const deferredEmailB = useDeferredValue(emailB);
 
-  const varsA = countTwigVariables(emailA);
-  const varsB = countTwigVariables(emailB);
+  const varsA = countTwigVariables(deferredEmailA);
+  const varsB = countTwigVariables(deferredEmailB);
 
-  const condA = countTwigConditions(emailA);
-  const condB = countTwigConditions(emailB);
-  const validationA = validateTwigControlStructures(emailA);
-  const validationB = validateTwigControlStructures(emailB);
+  const condA = countTwigConditions(deferredEmailA);
+  const condB = countTwigConditions(deferredEmailB);
+  const validationA = validateTwigControlStructures(deferredEmailA);
+  const validationB = validateTwigControlStructures(deferredEmailB);
   const htmlValidationA = [
-    ...validateHtmlRules(emailA),
-    ...validateEncodedSpecialCharacters(emailA),
+    ...validateHtmlRules(deferredEmailA),
+    ...validateEncodedSpecialCharacters(deferredEmailA),
   ];
   const htmlValidationB = [
-    ...validateHtmlRules(emailB),
-    ...validateEncodedSpecialCharacters(emailB),
+    ...validateHtmlRules(deferredEmailB),
+    ...validateEncodedSpecialCharacters(deferredEmailB),
   ];
 
   const varKeys = isDoubleView
@@ -1024,158 +1122,386 @@ export default function App() {
     : Object.keys(condA);
   const conditionBalanceA = getConditionBalance(condA);
   const conditionBalanceB = getConditionBalance(condB);
+  const summaryCards = isDoubleView
+    ? [
+        {
+          label: "Twig A",
+          value: validationA.length,
+          suffix: "erreur(s)",
+          tone: getCountBadgeClasses(validationA.length > 0),
+        },
+        {
+          label: "HTML A",
+          value: htmlValidationA.length,
+          suffix: "erreur(s)",
+          tone: getCountBadgeClasses(htmlValidationA.length > 0, "amber"),
+        },
+        {
+          label: "Twig B",
+          value: validationB.length,
+          suffix: "erreur(s)",
+          tone: getCountBadgeClasses(validationB.length > 0),
+        },
+        {
+          label: "HTML B",
+          value: htmlValidationB.length,
+          suffix: "erreur(s)",
+          tone: getCountBadgeClasses(htmlValidationB.length > 0, "amber"),
+        },
+      ]
+    : [
+        {
+          label: "Twig",
+          value: validationA.length,
+          suffix: "erreur(s)",
+          tone: getCountBadgeClasses(validationA.length > 0),
+        },
+        {
+          label: "HTML",
+          value: htmlValidationA.length,
+          suffix: "erreur(s)",
+          tone: getCountBadgeClasses(htmlValidationA.length > 0, "amber"),
+        },
+        {
+          label: "Equilibre Twig",
+          value: conditionBalanceA.isBalanced ? "OK" : "KO",
+          suffix: `${conditionBalanceA.ifTotal}/${conditionBalanceA.endifTotal} if | ${conditionBalanceA.forTotal}/${conditionBalanceA.endforTotal} for`,
+          tone: conditionBalanceA.isBalanced
+            ? "bg-emerald-100 text-emerald-700 ring-1 ring-inset ring-emerald-200"
+            : "bg-rose-100 text-rose-700 ring-1 ring-inset ring-rose-200",
+        },
+      ];
 
   return (
-    <div style={{ padding: 24, fontFamily: "monospace" }}>
-      <h1>🔍 Twig Diff Viewer</h1>
+    <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
+      <div className="mx-auto flex max-w-7xl flex-col gap-6">
+        <section className="overflow-hidden rounded-[2rem] border border-white/70 bg-white/75 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <div className="grid gap-6 border-b border-slate-200/80 px-6 py-6 lg:grid-cols-[1.4fr,auto] lg:px-8">
+            <div className="flex items-start gap-4">
+              <img
+                src={twigGuardLogo}
+                alt="TwigGuard"
+                className="h-16 w-16 shrink-0 rounded-3xl border border-slate-200/80 bg-slate-950/95 p-2 shadow-lg shadow-slate-950/10"
+              />
+              <div>
+                <div className="inline-flex items-center rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-50">
+                  TwigGuard
+                </div>
+                <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+                  Validation Twig + XHTML pour emails legacy
+                </h1>
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600 sm:text-base">
+                  Controle la structure Twig, le XHTML emailing, les attributs
+                  legacy et les equilibres de blocs avec une interface rapide,
+                  lisible et orientee validation.
+                </p>
+              </div>
+            </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-        <button
-          type="button"
-          onClick={() => setViewMode("single")}
-          style={{
-            padding: "8px 12px",
-            border: "1px solid #ccc",
-            background: !isDoubleView ? "#272727" : "#ffffff",
-            color: !isDoubleView ? "#ffffff" : "#000000",
-            cursor: "pointer",
-          }}
-        >
-          Vue simple
-        </button>
-        <button
-          type="button"
-          onClick={() => setViewMode("double")}
-          style={{
-            padding: "8px 12px",
-            border: "1px solid #ccc",
-            background: isDoubleView ? "#272727" : "#ffffff",
-            color: isDoubleView ? "#ffffff" : "#000000",
-            cursor: "pointer",
-          }}
-        >
-          Vue double
-        </button>
-      </div>
+            <div className="flex items-start justify-start lg:justify-end">
+              <div className="inline-flex rounded-2xl border border-slate-200 bg-slate-100 p-1 shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("single")}
+                  className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                    !isDoubleView
+                      ? "bg-white text-slate-950 shadow-sm"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Vue simple
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("double")}
+                  className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                    isDoubleView
+                      ? "bg-white text-slate-950 shadow-sm"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Vue double
+                </button>
+              </div>
+            </div>
+          </div>
 
-      <div style={{ display: "flex", gap: 16 }}>
-        <div style={{ width: "100%" }}>
-          <h2>{isDoubleView ? "Email actuellement en PROD" : "Email HTML"}</h2>
-          <textarea
-            placeholder="Email HTML A"
-            value={emailA}
-            onChange={(e) => setEmailA(e.target.value)}
-            rows={15}
-            style={{ width: "100%" }}
-          />
-        </div>
-        {isDoubleView ? (
-          <div style={{ width: "100%" }}>
-            <h2>Email sortie de PULSE</h2>
+          <div className="grid gap-4 px-6 py-6 sm:grid-cols-2 xl:grid-cols-4 lg:px-8">
+            {summaryCards.map((card) => (
+              <div
+                key={card.label}
+                className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm"
+              >
+                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  {card.label}
+                </div>
+                <div className="mt-3 flex items-end gap-3">
+                  <div className="text-3xl font-semibold tracking-tight text-slate-950">
+                    {card.value}
+                  </div>
+                  <div
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium ${card.tone}`}
+                  >
+                    {card.suffix}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section
+          className={`grid gap-6 ${isDoubleView ? "xl:grid-cols-2" : "grid-cols-1"}`}
+        >
+          <div className="rounded-[2rem] border border-slate-200 bg-white/80 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">
+                  {isDoubleView ? "Email actuellement en PROD" : "Email HTML"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Colle ici le HTML a verifier.
+                </p>
+              </div>
+              <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                {deferredEmailA.length.toLocaleString("fr-FR")} caracteres
+              </div>
+            </div>
             <textarea
-              placeholder="Email HTML B"
-              value={emailB}
-              onChange={(e) => setEmailB(e.target.value)}
-              rows={15}
-              style={{ width: "100%" }}
+              placeholder="Colle ici ton email HTML"
+              value={emailA}
+              onChange={(e) => setEmailA(e.target.value)}
+              rows={18}
+              className="min-h-[26rem] w-full rounded-[1.5rem] border border-slate-200 bg-slate-950 px-4 py-4 text-sm leading-6 text-slate-100 shadow-inner outline-none transition placeholder:text-slate-500 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
             />
           </div>
-        ) : null}
-      </div>
 
-      <h2 style={{ marginTop: 32 }}>Validation Twig</h2>
-      <div style={{ display: "flex", gap: 16 }}>
-        <div
-          style={{
-            width: "100%",
-            border: "1px solid #ccc",
-            padding: 12,
-            background: validationA.length ? "#fff2f2" : "#f4fff4",
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>{isDoubleView ? "Email A" : "Email"}</h3>
-          {renderValidationIssues(validationA)}
-        </div>
-        {isDoubleView ? (
+          {isDoubleView ? (
+            <div className="rounded-[2rem] border border-slate-200 bg-white/80 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.07)] backdrop-blur">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950">
+                    Email sortie de PULSE
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Colle ici la version a comparer.
+                  </p>
+                </div>
+                <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                  {deferredEmailB.length.toLocaleString("fr-FR")} caracteres
+                </div>
+              </div>
+              <textarea
+                placeholder="Colle ici le second email HTML"
+                value={emailB}
+                onChange={(e) => setEmailB(e.target.value)}
+                rows={18}
+                className="min-h-[26rem] w-full rounded-[1.5rem] border border-slate-200 bg-slate-950 px-4 py-4 text-sm leading-6 text-slate-100 shadow-inner outline-none transition placeholder:text-slate-500 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+              />
+            </div>
+          ) : null}
+        </section>
+
+        <section className="grid gap-6 xl:grid-cols-2">
           <div
-            style={{
-              width: "100%",
-              border: "1px solid #ccc",
-              padding: 12,
-              background: validationB.length ? "#fff2f2" : "#f4fff4",
-            }}
+            className={`rounded-[2rem] border p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] ${getIssuePanelClasses(validationA.length > 0)}`}
           >
-            <h3 style={{ marginTop: 0 }}>Email B</h3>
-            {renderValidationIssues(validationB)}
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">
+                  Validation Twig
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {isDoubleView ? "Email A" : "Fichier en cours"}
+                </p>
+              </div>
+              <div
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${getCountBadgeClasses(validationA.length > 0)}`}
+              >
+                {validationA.length} erreur(s)
+              </div>
+            </div>
+            <div className="space-y-3">{renderValidationIssues(validationA)}</div>
           </div>
-        ) : null}
-      </div>
 
-      <h2 style={{ marginTop: 32 }}>Validation HTML</h2>
-      <div style={{ display: "flex", gap: 16 }}>
-        <div
-          style={{
-            width: "100%",
-            border: "1px solid #ccc",
-            padding: 12,
-            background: htmlValidationA.length ? "#fffaf2" : "#f4fff4",
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>{isDoubleView ? "Email A" : "Email"}</h3>
-          {renderHtmlIssueList(htmlValidationA)}
-        </div>
-        {isDoubleView ? (
           <div
-            style={{
-              width: "100%",
-              border: "1px solid #ccc",
-              padding: 12,
-              background: htmlValidationB.length ? "#fffaf2" : "#f4fff4",
-            }}
+            className={`rounded-[2rem] border p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] ${getIssuePanelClasses(
+              isDoubleView ? validationB.length > 0 : htmlValidationA.length > 0,
+              isDoubleView ? "rose" : "amber",
+            )}`}
           >
-            <h3 style={{ marginTop: 0 }}>Email B</h3>
-            {renderHtmlIssueList(htmlValidationB)}
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">
+                  {isDoubleView ? "Validation Twig" : "Validation HTML"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {isDoubleView ? "Email B" : "Controle XHTML email"}
+                </p>
+              </div>
+              <div
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  isDoubleView
+                    ? getCountBadgeClasses(validationB.length > 0)
+                    : getCountBadgeClasses(htmlValidationA.length > 0, "amber")
+                }`}
+              >
+                {isDoubleView ? validationB.length : htmlValidationA.length} erreur(s)
+              </div>
+            </div>
+            <div className="space-y-3">
+              {isDoubleView
+                ? renderValidationIssues(validationB)
+                : renderHtmlIssueList(htmlValidationA)}
+            </div>
           </div>
+        </section>
+
+        {isDoubleView ? (
+          <section className="grid gap-6 xl:grid-cols-2">
+            <div
+              className={`rounded-[2rem] border p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] ${getIssuePanelClasses(htmlValidationA.length > 0, "amber")}`}
+            >
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950">
+                    Validation HTML
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-600">Email A</p>
+                </div>
+                <div
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${getCountBadgeClasses(htmlValidationA.length > 0, "amber")}`}
+                >
+                  {htmlValidationA.length} erreur(s)
+                </div>
+              </div>
+              <div className="space-y-3">{renderHtmlIssueList(htmlValidationA)}</div>
+            </div>
+
+            <div
+              className={`rounded-[2rem] border p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] ${getIssuePanelClasses(htmlValidationB.length > 0, "amber")}`}
+            >
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950">
+                    Validation HTML
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-600">Email B</p>
+                </div>
+                <div
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${getCountBadgeClasses(htmlValidationB.length > 0, "amber")}`}
+                >
+                  {htmlValidationB.length} erreur(s)
+                </div>
+              </div>
+              <div className="space-y-3">{renderHtmlIssueList(htmlValidationB)}</div>
+            </div>
+          </section>
         ) : null}
+
+        <section className="rounded-[2rem] border border-slate-200 bg-white/85 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] backdrop-blur">
+          <div className="mb-4 flex items-end justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">
+                Variables Twig
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Vue detaillee des variables detectees.
+              </p>
+            </div>
+            <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              {varKeys.length} variable(s)
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-[1.5rem] border border-slate-200 bg-white">
+            <table className="min-w-full border-collapse">
+              <thead className="bg-slate-950 text-left text-sm text-slate-50">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Variable</th>
+                  <th className="px-4 py-3 font-medium">
+                    {isDoubleView ? "Email A" : "Email"}
+                  </th>
+                  {isDoubleView ? (
+                    <th className="px-4 py-3 font-medium">Email B</th>
+                  ) : null}
+                </tr>
+              </thead>
+              <tbody>
+                {renderRows(varKeys, varsA, isDoubleView ? varsB : {}, {
+                  mode: isDoubleView ? "double" : "single",
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="rounded-[2rem] border border-slate-200 bg-white/85 p-5 shadow-[0_18px_60px_rgba(15,23,42,0.06)] backdrop-blur">
+          <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">
+                Conditions Twig
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Controle des expressions et equilibre if / endif.
+              </p>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div
+                className={`rounded-2xl px-4 py-3 text-sm ${conditionBalanceA.isBalanced ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200" : "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200"}`}
+              >
+              <div className="font-semibold">
+                  {isDoubleView ? "Equilibre A" : "Equilibre"}
+                </div>
+                <div className="mt-1">
+                  {conditionBalanceA.ifTotal} if / {conditionBalanceA.endifTotal} endif
+                </div>
+                <div className="mt-1">
+                  {conditionBalanceA.forTotal} for / {conditionBalanceA.endforTotal} endfor
+                </div>
+              </div>
+              {isDoubleView ? (
+                <div
+                  className={`rounded-2xl px-4 py-3 text-sm ${conditionBalanceB.isBalanced ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200" : "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200"}`}
+                >
+                  <div className="font-semibold">Equilibre B</div>
+                  <div className="mt-1">
+                    {conditionBalanceB.ifTotal} if / {conditionBalanceB.endifTotal} endif
+                  </div>
+                  <div className="mt-1">
+                    {conditionBalanceB.forTotal} for / {conditionBalanceB.endforTotal} endfor
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-[1.5rem] border border-slate-200 bg-white">
+            <table className="min-w-full border-collapse">
+              <thead className="bg-slate-950 text-left text-sm text-slate-50">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Condition</th>
+                  <th className="px-4 py-3 font-medium">
+                    {isDoubleView ? "Email A" : "Email"}
+                  </th>
+                  {isDoubleView ? (
+                    <th className="px-4 py-3 font-medium">Email B</th>
+                  ) : null}
+                  <th className="px-4 py-3 font-medium">Totaux</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renderRows(condKeys, condA, isDoubleView ? condB : {}, {
+                  showTotals: true,
+                  mode: isDoubleView ? "double" : "single",
+                  balanceA: conditionBalanceA,
+                  balanceB: conditionBalanceB,
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
-
-      {/* VARIABLES */}
-      <h2>Variables Twig</h2>
-      <table border="1" cellPadding="8" width="100%">
-        <thead>
-          <tr>
-            <th>Variable</th>
-            <th>{isDoubleView ? "Email A" : "Email"}</th>
-            {isDoubleView ? <th>Email B</th> : null}
-          </tr>
-        </thead>
-        <tbody>
-          {renderRows(varKeys, varsA, isDoubleView ? varsB : {}, {
-            mode: isDoubleView ? "double" : "single",
-          })}
-        </tbody>
-      </table>
-
-      {/* CONDITIONS */}
-      <h2 style={{ marginTop: 32 }}>Conditions Twig</h2>
-      <table border="1" cellPadding="8" width="100%">
-        <thead>
-          <tr>
-            <th>Condition</th>
-            <th>{isDoubleView ? "Email A" : "Email"}</th>
-            {isDoubleView ? <th>Email B</th> : null}
-            <th>Totaux</th>
-          </tr>
-        </thead>
-        <tbody>
-          {renderRows(condKeys, condA, isDoubleView ? condB : {}, {
-            showTotals: true,
-            mode: isDoubleView ? "double" : "single",
-            balanceA: conditionBalanceA,
-            balanceB: conditionBalanceB,
-          })}
-        </tbody>
-      </table>
-    </div>
+    </main>
   );
 }
