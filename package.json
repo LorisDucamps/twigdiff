@@ -1,5 +1,5 @@
 {
-  "name": "twig-diff-react",
+  "name": "twigguard",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -9,11 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "html-validate": "^10.17.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.1",
     "@vitejs/plugin-react": "^4.0.0",
+    "tailwindcss": "^4.3.1",
     "vite": "^5.0.0"
   }
 }
